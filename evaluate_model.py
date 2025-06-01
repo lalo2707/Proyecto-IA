@@ -1,60 +1,62 @@
 import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
 import cv2
 import numpy as np
-from tensorflow.keras.models import load_model
+from keras.models import load_model
 from mediapipe.python.solutions.holistic import Holistic
-from utils import draw_keypoints, extract_keypoints, format_sentences, get_actions, mediapipe_detection, there_hand, save_txt
+from utils import draw_keypoints, extract_keypoints, get_actions
+from config import DATA_PATH, FONT, FONT_POS, FONT_SIZE, MAX_LENGTH_FRAMES, MODELS_PATH, MODEL_NAME
 from text_to_speech import text_to_speech
-from config import DATA_PATH, FONT, FONT_POS, FONT_SIZE, MAX_LENGTH_FRAMES, MIN_LENGTH_FRAMES, MODELS_PATH, MODEL_NAME
+import time
 
+# Diccionario de feedback por clase detectada
+feedback = {
+    "sentadilla_correcta": "¡Buena postura! Continúa así.",
+    "sentadilla_incorrecta": "Ajusta tu postura, espalda recta.",
+}
 
-def evaluate_model(model, threshold=0.7):
-    count_frame = 0
-    repe_sent = 1
-    kp_sequence, sentence = [], []
-    actions = get_actions(DATA_PATH)
+# Cargar modelo y acciones
+model = load_model(os.path.join(MODELS_PATH, MODEL_NAME))
+actions = get_actions(DATA_PATH)
+sequence = []
 
-    with Holistic() as holistic_model:
-        video = cv2.VideoCapture(0)
+last_alert_time = 0
+alert_cooldown = 2  # segundos
 
-        while video.isOpened():
-            _, frame = video.read()
+with Holistic() as holistic:
+    cap = cv2.VideoCapture(0)
+    frame_count = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        frame_count += 1
+        if frame_count % 2 != 0:  # Procesa solo 1 de cada 2 frames
+            continue
+        frame = cv2.flip(frame, 1)
+        image, results = frame.copy(), holistic.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw_keypoints(image, results)
+        keypoints = extract_keypoints(results)
+        sequence.append(keypoints)
+        if len(sequence) > MAX_LENGTH_FRAMES:
+            sequence = sequence[-MAX_LENGTH_FRAMES:]
 
-            # Flip the frame horizontally to create a mirror effect
-            frame = cv2.flip(frame, 1)
+        # Solo predecir si todos los frames tienen keypoints válidos (no solo ceros)
+        if len(sequence) == MAX_LENGTH_FRAMES and all(np.sum(np.abs(f)) > 0 for f in sequence):
+            res = model.predict(np.expand_dims(sequence, axis=0))[0]
+            pred_class = actions[np.argmax(res)]
+            mensaje = feedback.get(pred_class, f"Ejercicio detectado: {pred_class}")
+            color = (0, 255, 0) if "correcta" in pred_class else (0, 0, 255)
+            cv2.putText(image, mensaje, FONT_POS, FONT, FONT_SIZE, color, 2, cv2.LINE_AA)
 
-            image, results = mediapipe_detection(frame, holistic_model)
-            kp_sequence.append(extract_keypoints(results))
+            # Sonido solo si es incorrecta y cooldown
+            if "incorrecta" in pred_class:
+                current_time = time.time()
+                if current_time - last_alert_time > alert_cooldown:
+                    text_to_speech(mensaje)
+                    last_alert_time = current_time
 
-            if len(kp_sequence) > MAX_LENGTH_FRAMES and there_hand(results):
-                count_frame += 1
-
-            else:
-                if count_frame >= MIN_LENGTH_FRAMES:
-                    res = model.predict(np.expand_dims(kp_sequence[-MAX_LENGTH_FRAMES:], axis=0))[0]
-
-                    if res[np.argmax(res)] > threshold:
-                        sent = actions[np.argmax(res)]
-                        sentence.insert(0, sent)
-                        text_to_speech(sent)
-                        sentence, repe_sent = format_sentences(sent, sentence, repe_sent)
-
-                    count_frame = 0
-                    kp_sequence = []
-
-            cv2.rectangle(image, (0, 0), (640, 35), (245, 117, 16), -1)
-            cv2.putText(image, ' | '.join(sentence), FONT_POS, FONT, FONT_SIZE, (255, 255, 255))
-
-            draw_keypoints(image, results)
-            cv2.imshow('Traductor LSM', image)
-            if cv2.waitKey(10) & 0xFF == ord('q'):
-                break
-
-        video.release()
-        cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    model_path = os.path.join(MODELS_PATH, MODEL_NAME)
-    lstm_model = load_model(model_path)
-    evaluate_model(lstm_model)
+        cv2.imshow('Posture Corrector', image)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    cap.release()
+    cv2.destroyAllWindows()

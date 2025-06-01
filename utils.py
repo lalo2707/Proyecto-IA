@@ -38,11 +38,10 @@ def save_frames(frames, output_folder):
 
 # Extrae los keypoints de los resultados de Mediapipe
 def extract_keypoints(results):
-    pose = np.array([[res.x, res.y, res.z, res.visibility] for res in results.pose_landmarks.landmark]).flatten() if results.pose_landmarks else np.zeros(33*4)
-    face = np.array([[res.x, res.y, res.z] for res in results.face_landmarks.landmark]).flatten() if results.face_landmarks else np.zeros(468*3)
-    lh = np.array([[res.x, res.y, res.z] for res in results.left_hand_landmarks.landmark]).flatten() if results.left_hand_landmarks else np.zeros(21*3)
-    rh = np.array([[res.x, res.y, res.z] for res in results.right_hand_landmarks.landmark]).flatten() if results.right_hand_landmarks else np.zeros(21*3)
-    return np.concatenate([pose, face, lh, rh])
+    if results.pose_landmarks:
+        return np.array([[lm.x, lm.y, lm.z, lm.visibility] for lm in results.pose_landmarks.landmark]).flatten()
+    else:
+        return np.zeros(33*4)
 
 # Obtiene las acciones (nombres de archivos .h5) desde un directorio específico
 def get_actions(path):
